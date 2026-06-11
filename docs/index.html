@@ -101,12 +101,41 @@
   .cmp-pos{color:var(--good); font-weight:700;} .cmp-neg{color:var(--bad); font-weight:700;}
 
   .empty-note{padding:24px; text-align:center; color:var(--muted); font-size:13px;}
+
+  /* ── 비밀번호 게이트 ── */
+  #gate{position:fixed; inset:0; z-index:100; background:rgba(246,247,249,.7); backdrop-filter:blur(14px);
+    display:flex; align-items:center; justify-content:center;}
+  .gate-box{background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:34px 30px;
+    width:min(350px,90vw); text-align:center; box-shadow:0 20px 50px rgba(25,28,34,.15);}
+  .gate-box .lock{font-size:32px;}
+  .gate-box h2{font-size:16px; margin:10px 0 5px;}
+  .gate-box p{font-size:13px; color:var(--muted); margin-bottom:16px;}
+  .gate-row{display:flex; gap:8px;}
+  .gate-row input{flex:1; border:1px solid var(--line); border-radius:9px; padding:10px 12px;
+    font-size:14px; font-family:inherit; color:var(--ink);}
+  .gate-row input:focus{outline:none; border-color:var(--accent);}
+  .gate-row button{background:var(--ink); color:#fff; border:0; border-radius:9px; padding:10px 18px;
+    font-weight:700; font-size:14px; cursor:pointer; font-family:inherit;}
+  #gateErr{color:var(--bad); font-size:12px; margin-top:10px; min-height:16px;}
   @media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto;} }
 </style>
 </head>
 <body>
 
-<nav class="sidenav" id="sidenav">
+<div id="gate" hidden>
+  <div class="gate-box">
+    <div class="lock">🔒</div>
+    <h2>데이터 보호</h2>
+    <p>실제 광고 데이터가 포함되어 있습니다.<br>비밀번호를 입력해 주세요.</p>
+    <div class="gate-row">
+      <input type="password" id="gatePw" placeholder="비밀번호 입력" autocomplete="off">
+      <button id="gateBtn">확인</button>
+    </div>
+    <div id="gateErr"></div>
+  </div>
+</div>
+
+<nav class="sidenav" id="sidenav" style="visibility:hidden">
   <div class="nav-title">영역 이동</div>
   <a href="#sec-kpi">KPI 요약</a>
   <a href="#sec-trend">일별 추이</a>
@@ -119,7 +148,7 @@
   <a href="#sec-daily">일자별 상세</a>
 </nav>
 
-<div class="layout">
+<div class="layout" id="appLayout" style="visibility:hidden">
   <div class="topbar">
     <div class="topbar-row">
       <h1>광고 성과 대시보드</h1>
@@ -238,6 +267,35 @@
 
 <script>
 /* ─────────────────────────────────────────────
+   비밀번호 설정 — 따옴표 안의 값을 바꾸면 됩니다.
+   ⚠️ 간단한 가림막 수준입니다. 저장소가 Public이면
+   데이터 파일 주소를 아는 사람은 내용을 받을 수 있으니,
+   확실한 보호가 필요하면 Private 전환 또는 암호화를 적용하세요.
+───────────────────────────────────────────── */
+const PASSWORD = "2026";
+
+function setupGate(){
+  if(sessionStorage.getItem("adboard_ok")==="1"){ unlockGate(); return; }
+  document.getElementById("gate").hidden = false;
+  const tryPw = ()=>{
+    if(document.getElementById("gatePw").value === PASSWORD){
+      sessionStorage.setItem("adboard_ok","1"); unlockGate();
+    }else{
+      document.getElementById("gateErr").textContent = "비밀번호가 틀렸습니다";
+      document.getElementById("gatePw").select();
+    }
+  };
+  document.getElementById("gateBtn").onclick = tryPw;
+  document.getElementById("gatePw").addEventListener("keydown", e=>{ if(e.key==="Enter") tryPw(); });
+  document.getElementById("gatePw").focus();
+}
+function unlockGate(){
+  document.getElementById("gate").hidden = true;
+  document.getElementById("appLayout").style.visibility = "visible";
+  document.getElementById("sidenav").style.visibility = "visible";
+}
+
+/* ─────────────────────────────────────────────
    GA4 이벤트 그룹 설정 — 광고주에 맞게 수정하세요.
    여기에 없는 이벤트는 자동으로 "기타" 그룹에 들어갑니다.
 ───────────────────────────────────────────── */
@@ -295,6 +353,7 @@ function presetRange(label){
 
 /* ── 초기화 ── */
 async function init(){
+  setupGate();
   try{
     const res = await fetch("data.json?t=" + Date.now());
     const json = await res.json();
@@ -612,9 +671,9 @@ function renderAd(rows){
   if(state.adSelCampaign) target = target.filter(r=> r.campaign===state.adSelCampaign);
   if(state.adSelGroup) target = target.filter(r=> r.group===state.adSelGroup);
   const list = buildAgg(target, r=>r.platform+"|"+r.campaign+"|"+r.group+"|"+r.ad,
-      r=>({platform:r.platform, name:r.ad, sub:[r.campaign,r.group].filter(Boolean).join(" › ")}))
-    .map(c=> statRow({...c, ga4:"-"}));
-  perfTable(document.getElementById("adTable"), list, "소재", sorts.ad, ()=>renderAd(mediaRows()), {ga4Dash:true});
+      r=>({platform:r.platform, name:r.ad, campaign:r.campaign, sub:[r.campaign,r.group].filter(Boolean).join(" › ")}))
+    .map(c=> statRow({...c, ga4: ga4Conv(g=> g.platform===c.platform && g.campaign===c.campaign && g.ad===c.name)}));
+  perfTable(document.getElementById("adTable"), list, "소재", sorts.ad, ()=>renderAd(mediaRows()));
 }
 
 function renderGA4(){
@@ -721,17 +780,17 @@ function renderDaily(rows){
   aSel.onchange=()=>{ d.ad=aSel.value; renderDaily(mediaRows()); };
 
   const target = f3.filter(r=> !d.ad || r.ad===d.ad);
-  const ga4Possible = !d.ad; // 소재 선택 시 GA4 매칭 불가
   const ga4Filter = g =>
     (!d.platform || g.platform===d.platform) &&
     (!d.campaign || g.campaign===d.campaign) &&
-    (!d.group || g.group===d.group);
+    (!d.group || g.group===d.group) &&
+    (!d.ad || g.ad===d.ad);
 
   const dates = [...new Set(target.map(r=>r.date))].sort().reverse();
   const body = dates.map(date=>{
     const dayRows = target.filter(r=>r.date===date);
     const a = agg(dayRows);
-    const g = ga4Possible ? ga4Conv(gg=> gg.date===date && ga4Filter(gg)) : "-";
+    const g = ga4Conv(gg=> gg.date===date && ga4Filter(gg));
     return `<tr><td>${date}</td>
       <td>${fmtWon(a.cost)}</td><td>${fmt(a.impressions)}</td><td>${fmt(a.clicks)}</td>
       <td>${a.impressions?(a.clicks/a.impressions*100).toFixed(2)+"%":"-"}</td>
