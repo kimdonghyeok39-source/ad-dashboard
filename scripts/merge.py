@@ -49,7 +49,7 @@ COLUMN_MAP = {
         "date": ["일", "날짜", "day"],
         "campaign": ["캠페인", "campaign"],
         "group": ["광고그룹", "광고 그룹", "ad group"],
-        "ad": ["광고 이름", "광고 제목", "ad name"],
+        "ad": ["광고 이름", "광고 라벨", "광고 제목", "ad name"],
         "keyword": ["검색 키워드", "키워드", "keyword"],
         "device": ["기기", "디바이스", "device"],
         "impressions": ["노출수", "노출", "impressions"],
@@ -244,12 +244,12 @@ def load_mapping(campaign_platform):
     campaign_platform: {매체캠페인명: set(매체들)} — 매체 데이터에서 생성
     """
     if not MAPPING_FILE.exists():
-        return {}, {}
+        return {}, {}, {}
     try:
         mdf = read_csv_safely(MAPPING_FILE, {"_": ["UTM캠페인", "매체캠페인명"]})
     except Exception as e:
         print(f"[경고] mapping.csv 읽기 실패: {e}", file=sys.stderr)
-        return {}, {}
+        return {}, {}, {}
 
     for col in ("매체", "매체캠페인명", "UTM캠페인", "매체그룹명", "UTM콘텐츠"):
         if col not in mdf.columns:
@@ -258,7 +258,7 @@ def load_mapping(campaign_platform):
     for col in mdf.columns:
         mdf[col] = mdf[col].str.strip()
 
-    camp_map, grp_map = {}, {}
+    camp_map, grp_map, grp_by_content = {}, {}, {}
     valid_platforms = set(PLATFORM_LABEL.values())
     for _, r in mdf.iterrows():
         if not r["매체캠페인명"] or not r["UTM캠페인"]:
@@ -283,7 +283,10 @@ def load_mapping(campaign_platform):
         camp_map[r["UTM캠페인"]] = (platform, r["매체캠페인명"])
         if r["UTM콘텐츠"]:
             grp_map[(r["UTM캠페인"], r["UTM콘텐츠"])] = (platform, r["매체캠페인명"], r["매체그룹명"])
-    return camp_map, grp_map
+            # 보조 인덱스: UTM캠페인 값이 정확하지 않아도
+            # (매체, 매체캠페인명, UTM콘텐츠) 조합으로 그룹 매칭
+            grp_by_content[(platform, r["매체캠페인명"], r["UTM콘텐츠"])] = r["매체그룹명"]
+    return camp_map, grp_map, grp_by_content
 
 
 def process_ga4(campaign_platform, ad_index, ad_group):
@@ -291,7 +294,7 @@ def process_ga4(campaign_platform, ad_index, ad_group):
     if not folder.exists():
         return [], {}
 
-    camp_map, grp_map = load_mapping(campaign_platform)
+    camp_map, grp_map, grp_by_content = load_mapping(campaign_platform)
     frames = []
 
     for csv_path in sorted(folder.glob("*.csv")):
@@ -348,16 +351,25 @@ def process_ga4(campaign_platform, ad_index, ad_group):
     records, unmapped = [], {}
     for _, r in ga4.iterrows():
         key2 = (r["utm_campaign"], r["utm_content"])
+        direct = campaign_platform.get(r["utm_campaign"], set())
         if key2 in grp_map:
             platform, campaign, group = grp_map[key2]
         elif r["utm_campaign"] in camp_map:
             platform, campaign = camp_map[r["utm_campaign"]]
+            group = ""
+        elif len(direct) == 1:
+            # UTM캠페인 값이 매체 캠페인명과 완전히 같으면 매핑 없이 자동 연결
+            platform = next(iter(direct))
+            campaign = r["utm_campaign"]
             group = ""
         else:
             total = int(sum(r[ev] for ev in all_events))
             if total > 0 and r["utm_campaign"] not in ("(not set)", "(direct)", "(organic)"):
                 unmapped[r["utm_campaign"]] = unmapped.get(r["utm_campaign"], 0) + total
             continue
+
+        if not group and r["utm_content"]:
+            group = grp_by_content.get((platform, campaign, r["utm_content"]), "")
 
         events = {ev: int(r[ev]) for ev in all_events if r[ev] > 0}
         if not events:
