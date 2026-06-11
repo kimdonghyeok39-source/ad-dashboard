@@ -3,7 +3,7 @@ name: 광고 데이터 통합
 on:
   push:
     paths:
-      - "data/raw/**"
+      - "data/**"
       - "scripts/merge.py"
   workflow_dispatch: {}
 
