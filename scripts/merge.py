@@ -237,8 +237,12 @@ def process_platform(platform: str) -> list:
 # ──────────────────────────────────────────────
 # 매핑 테이블 + GA4 데이터 처리
 # ──────────────────────────────────────────────
-def load_mapping():
-    """data/mapping.csv → (캠페인 매핑, 그룹 매핑)"""
+def load_mapping(campaign_platform):
+    """data/mapping.csv → (캠페인 매핑, 그룹 매핑)
+
+    매체 칸이 비어 있으면, 매체 데이터에 있는 캠페인명으로 매체를 자동 추론합니다.
+    campaign_platform: {매체캠페인명: set(매체들)} — 매체 데이터에서 생성
+    """
     if not MAPPING_FILE.exists():
         return {}, {}
     try:
@@ -257,23 +261,37 @@ def load_mapping():
     camp_map, grp_map = {}, {}
     valid_platforms = set(PLATFORM_LABEL.values())
     for _, r in mdf.iterrows():
-        if not r["매체"] or not r["매체캠페인명"] or not r["UTM캠페인"]:
+        if not r["매체캠페인명"] or not r["UTM캠페인"]:
             continue
-        if r["매체"] not in valid_platforms:
-            print(f"  [경고] mapping.csv: 알 수 없는 매체 '{r['매체']}' (메타/구글/네이버/카카오 중 하나여야 함)", file=sys.stderr)
+
+        platform = r["매체"]
+        if platform and platform not in valid_platforms:
+            print(f"  [경고] mapping.csv: 알 수 없는 매체 '{platform}' (메타/구글/네이버/카카오 중 하나여야 함)", file=sys.stderr)
             continue
-        camp_map[r["UTM캠페인"]] = (r["매체"], r["매체캠페인명"])
+        if not platform:
+            # 매체 자동 추론: 매체 데이터에서 같은 캠페인명 검색
+            found = campaign_platform.get(r["매체캠페인명"], set())
+            if len(found) == 1:
+                platform = next(iter(found))
+            elif len(found) > 1:
+                print(f"  [경고] mapping.csv: 캠페인 '{r['매체캠페인명']}'이(가) 여러 매체({', '.join(sorted(found))})에 있어 매체 칸을 채워야 합니다", file=sys.stderr)
+                continue
+            else:
+                print(f"  [경고] mapping.csv: 캠페인 '{r['매체캠페인명']}'을(를) 매체 데이터에서 찾지 못했습니다 (이름이 정확히 같은지 확인)", file=sys.stderr)
+                continue
+
+        camp_map[r["UTM캠페인"]] = (platform, r["매체캠페인명"])
         if r["UTM콘텐츠"]:
-            grp_map[(r["UTM캠페인"], r["UTM콘텐츠"])] = (r["매체"], r["매체캠페인명"], r["매체그룹명"])
+            grp_map[(r["UTM캠페인"], r["UTM콘텐츠"])] = (platform, r["매체캠페인명"], r["매체그룹명"])
     return camp_map, grp_map
 
 
-def process_ga4():
+def process_ga4(campaign_platform):
     folder = RAW_DIR / "ga4"
     if not folder.exists():
         return [], {}
 
-    camp_map, grp_map = load_mapping()
+    camp_map, grp_map = load_mapping(campaign_platform)
     frames = []
 
     for csv_path in sorted(folder.glob("*.csv")):
@@ -355,8 +373,12 @@ def main():
         all_rows.extend(process_platform(platform))
     all_rows.sort(key=lambda r: (r["date"], r["platform"], r["campaign"]))
 
+    campaign_platform = {}
+    for r in all_rows:
+        campaign_platform.setdefault(r["campaign"], set()).add(r["platform"])
+
     print("[GA4] 처리 중...")
-    ga4_records, unmapped = process_ga4()
+    ga4_records, unmapped = process_ga4(campaign_platform)
     if unmapped:
         print("\n  ⚠️ 매핑되지 않은 UTM 캠페인 (전환수 순) — data/mapping.csv에 추가해 주세요:")
         for utm, total in sorted(unmapped.items(), key=lambda x: -x[1])[:20]:
