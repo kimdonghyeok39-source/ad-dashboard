@@ -134,8 +134,12 @@ def read_csv_safely(path: Path, mapping: dict) -> pd.DataFrame:
             header_idx = i
             break
 
+    # 구분자 자동 감지 (구글 애즈는 탭 구분 파일을 주는 경우가 있음)
+    header_line = text.splitlines()[header_idx] if text.splitlines() else ""
+    sep = "\t" if header_line.count("\t") > header_line.count(",") else ","
+
     import io
-    return pd.read_csv(io.StringIO(text), skiprows=header_idx)
+    return pd.read_csv(io.StringIO(text), skiprows=header_idx, sep=sep)
 
 
 def find_column(columns, candidates):
@@ -210,6 +214,13 @@ def process_platform(platform: str) -> list:
         out = out.dropna(subset=["date"])
         summary_words = {"합계", "총계", "전체", "total", "총합", "소계"}
         out = out[~out["campaign"].str.lower().isin(summary_words)]
+
+        # 같은 파일 안에서 차원이 동일한 행(기여 설정·네트워크 분할 등으로
+        # 쪼개진 행)은 합산 — 버리면 합계가 모자라게 됨
+        dims = ["date", "campaign", "group", "ad", "keyword", "device", "platform"]
+        metrics = ["impressions", "clicks", "cost", "conversions", "revenue"]
+        out = out.groupby(dims, as_index=False)[metrics].sum()
+
         rows.append(out)
         print(f"  {csv_path.name}: {len(out)}행 처리")
 
