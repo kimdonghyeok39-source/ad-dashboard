@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>광고 성과 대시보드</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#F6F7F9; --surface:#FFFFFF; --ink:#191C22; --muted:#6E7480;
+    --line:#E6E8EC; --accent:#191C22;
+    --c-meta:#0866FF; --c-google:#EA4335; --c-naver:#03C75A; --c-kakao:#E8B500;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    font-family:"Pretendard Variable",Pretendard,-apple-system,system-ui,sans-serif;
+    background:var(--bg); color:var(--ink); font-size:14px; line-height:1.5;
+    padding:24px clamp(16px,4vw,40px) 60px;
+  }
+  h1{font-size:20px; font-weight:800; letter-spacing:-0.02em;}
+  .topbar{display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:20px;}
+  .topbar .meta{font-size:12px; color:var(--muted); margin-right:auto;}
+  .chips{display:flex; flex-wrap:wrap; gap:6px;}
+  .chip{
+    border:1px solid var(--line); background:var(--surface); border-radius:999px;
+    padding:6px 14px; font-size:13px; font-weight:600; cursor:pointer; color:var(--muted);
+    display:flex; align-items:center; gap:6px; transition:all .15s;
+  }
+  .chip:focus-visible{outline:2px solid var(--ink); outline-offset:2px;}
+  .chip .dot{width:8px; height:8px; border-radius:50%; background:var(--pc,#999);}
+  .chip.on{color:var(--ink); border-color:var(--pc,var(--ink)); background:color-mix(in srgb,var(--pc,#888) 8%, white);}
+  .chip.range.on{background:var(--ink); color:#fff; border-color:var(--ink);}
+  .kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:20px;}
+  .kpi{background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:14px 16px;}
+  .kpi .label{font-size:12px; color:var(--muted); font-weight:600;}
+  .kpi .value{font-size:clamp(18px,2vw,24px); font-weight:800; letter-spacing:-0.03em; font-variant-numeric:tabular-nums; margin:2px 0;}
+  .kpi .delta{font-size:11px; font-weight:700; font-variant-numeric:tabular-nums;}
+  .delta.up{color:#0A8A4A;} .delta.down{color:#D43B2F;} .delta.flat{color:var(--muted);}
+  .grid{display:grid; grid-template-columns:1fr; gap:14px; margin-bottom:14px;}
+  @media(min-width:900px){ .grid{grid-template-columns:1.8fr 1fr;} }
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:18px;}
+  .card h2{font-size:14px; font-weight:700; margin-bottom:4px;}
+  .card .sub{font-size:12px; color:var(--muted); margin-bottom:12px;}
+  .card-head{display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:8px;}
+  .seg{display:flex; gap:2px; background:var(--bg); border-radius:8px; padding:2px;}
+  .seg button{border:0; background:transparent; padding:4px 10px; font-size:12px; font-weight:600; color:var(--muted); border-radius:6px; cursor:pointer; font-family:inherit;}
+  .seg button.on{background:var(--surface); color:var(--ink); box-shadow:0 1px 2px rgba(0,0,0,.08);}
+  .chart-wrap{position:relative; height:300px;}
+  .share-list{margin-top:14px; display:flex; flex-direction:column; gap:8px;}
+  .share-row{display:flex; align-items:center; gap:8px; font-size:13px;}
+  .share-row .dot{width:9px; height:9px; border-radius:50%;}
+  .share-row .name{font-weight:600; width:52px;}
+  .share-row .bar{flex:1; height:6px; background:var(--bg); border-radius:3px; overflow:hidden;}
+  .share-row .bar i{display:block; height:100%; border-radius:3px;}
+  .share-row .pct{font-variant-numeric:tabular-nums; color:var(--muted); width:84px; text-align:right; font-size:12px;}
+  table{width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums;}
+  th,td{padding:9px 10px; text-align:right; font-size:13px; border-bottom:1px solid var(--line); white-space:nowrap;}
+  th{font-size:11px; color:var(--muted); font-weight:700; cursor:pointer; user-select:none; position:sticky; top:0; background:var(--surface);}
+  th:hover{color:var(--ink);}
+  th.sorted::after{content:" ▾"; font-size:9px;}
+  th.sorted.asc::after{content:" ▴";}
+  td:first-child,th:first-child{text-align:left;}
+  .badge{display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; color:#fff; margin-right:6px;}
+  .table-scroll{overflow:auto; max-height:480px;}
+  .empty{padding:60px 20px; text-align:center; color:var(--muted);}
+  .empty b{display:block; color:var(--ink); font-size:15px; margin-bottom:6px;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>광고 성과 대시보드</h1>
+  <span class="meta" id="updatedAt"></span>
+  <div class="chips" id="platformChips" aria-label="플랫폼 필터"></div>
+  <div class="chips" id="rangeChips" aria-label="기간 필터"></div>
+</div>
+
+<div class="kpis" id="kpis"></div>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-head">
+      <div><h2>일별 추이</h2><div class="sub">플랫폼별 누적 · 직전 동일 기간과 비교는 상단 카드 참고</div></div>
+      <div class="seg" id="metricSeg"></div>
+    </div>
+    <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>플랫폼별 지출 비중</h2>
+    <div class="sub" id="shareSub"></div>
+    <div class="chart-wrap" style="height:220px"><canvas id="shareChart"></canvas></div>
+    <div class="share-list" id="shareList"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><h2>캠페인 성과</h2><div class="sub">열 제목을 누르면 정렬됩니다</div></div>
+  </div>
+  <div class="table-scroll"><table id="campaignTable"></table></div>
+</div>
+
+<script>
+const PLATFORM_COLORS = { "메타":"#0866FF", "구글":"#EA4335", "네이버":"#03C75A", "카카오":"#E8B500" };
+const METRICS = { cost:"지출", impressions:"노출", clicks:"클릭", conversions:"전환", revenue:"매출" };
+const fmt = n => Math.round(n).toLocaleString("ko-KR");
+const fmtWon = n => "₩" + fmt(n);
+
+let ALL = [], state = { platforms:new Set(), rangeDays:14, metric:"cost" };
+let trendChart, shareChart, sortKey="cost", sortAsc=false;
+
+async function init(){
+  try{
+    const res = await fetch("data.json?t=" + Date.now());
+    const json = await res.json();
+    ALL = json.rows || [];
+    document.getElementById("updatedAt").textContent = "마지막 업데이트 " + (json.updated_at || "-");
+  }catch(e){
+    document.body.innerHTML = '<div class="empty"><b>data.json을 불러오지 못했습니다</b>data/raw 폴더에 CSV를 올리고 통합 작업이 완료되면 자동으로 표시됩니다.</div>';
+    return;
+  }
+  if(!ALL.length){
+    document.body.innerHTML = '<div class="empty"><b>아직 데이터가 없습니다</b>data/raw/&lt;플랫폼&gt;/ 폴더에 CSV 파일을 업로드해 주세요.</div>';
+    return;
+  }
+  state.platforms = new Set([...new Set(ALL.map(r=>r.platform))]);
+  buildPlatformChips(); buildRangeChips(); buildMetricSeg();
+  render();
+}
+
+function buildPlatformChips(){
+  const wrap = document.getElementById("platformChips");
+  [...new Set(ALL.map(r=>r.platform))].forEach(p=>{
+    const b = document.createElement("button");
+    b.className = "chip on"; b.style.setProperty("--pc", PLATFORM_COLORS[p]||"#888");
+    b.innerHTML = `<span class="dot"></span>${p}`;
+    b.onclick = ()=>{
+      if(state.platforms.has(p) && state.platforms.size>1) state.platforms.delete(p);
+      else state.platforms.add(p);
+      b.classList.toggle("on", state.platforms.has(p));
+      render();
+    };
+    wrap.appendChild(b);
+  });
+}
+function buildRangeChips(){
+  const wrap = document.getElementById("rangeChips");
+  [[7,"7일"],[14,"14일"],[30,"30일"],[0,"전체"]].forEach(([d,label])=>{
+    const b = document.createElement("button");
+    b.className = "chip range" + (d===state.rangeDays?" on":"");
+    b.textContent = label;
+    b.onclick = ()=>{
+      state.rangeDays = d;
+      wrap.querySelectorAll(".chip").forEach(c=>c.classList.remove("on"));
+      b.classList.add("on"); render();
+    };
+    wrap.appendChild(b);
+  });
+}
+function buildMetricSeg(){
+  const seg = document.getElementById("metricSeg");
+  Object.entries(METRICS).forEach(([k,label])=>{
+    const b = document.createElement("button");
+    b.textContent = label; if(k===state.metric) b.classList.add("on");
+    b.onclick = ()=>{
+      state.metric = k;
+      seg.querySelectorAll("button").forEach(x=>x.classList.remove("on"));
+      b.classList.add("on"); renderTrend(currentRows());
+    };
+    seg.appendChild(b);
+  });
+}
+
+function dateBounds(){
+  const maxDate = ALL.reduce((m,r)=> r.date>m?r.date:m, "");
+  if(!state.rangeDays) return { from:"0000", to:maxDate, prevFrom:null, prevTo:null };
+  const end = new Date(maxDate);
+  const from = new Date(end); from.setDate(end.getDate()-state.rangeDays+1);
+  const prevTo = new Date(from); prevTo.setDate(from.getDate()-1);
+  const prevFrom = new Date(prevTo); prevFrom.setDate(prevTo.getDate()-state.rangeDays+1);
+  const iso = d=>d.toISOString().slice(0,10);
+  return { from:iso(from), to:maxDate, prevFrom:iso(prevFrom), prevTo:iso(prevTo) };
+}
+function currentRows(){
+  const {from,to} = dateBounds();
+  return ALL.filter(r=> state.platforms.has(r.platform) && r.date>=from && r.date<=to);
+}
+function prevRows(){
+  const {prevFrom,prevTo} = dateBounds();
+  if(!prevFrom) return [];
+  return ALL.filter(r=> state.platforms.has(r.platform) && r.date>=prevFrom && r.date<=prevTo);
+}
+const sum = (rows,k)=> rows.reduce((s,r)=>s+(r[k]||0),0);
+
+function render(){
+  const rows = currentRows(), prev = prevRows();
+  renderKpis(rows, prev); renderTrend(rows); renderShare(rows); renderTable(rows);
+}
+
+function renderKpis(rows, prev){
+  const cost=sum(rows,"cost"), imp=sum(rows,"impressions"), clk=sum(rows,"clicks"),
+        conv=sum(rows,"conversions"), rev=sum(rows,"revenue");
+  const pCost=sum(prev,"cost"), pImp=sum(prev,"impressions"), pClk=sum(prev,"clicks"),
+        pConv=sum(prev,"conversions"), pRev=sum(prev,"revenue");
+  const items = [
+    ["총 지출", fmtWon(cost), cost, pCost, true],
+    ["노출", fmt(imp), imp, pImp],
+    ["클릭", fmt(clk), clk, pClk],
+    ["CTR", imp? (clk/imp*100).toFixed(2)+"%":"-", imp?clk/imp:0, pImp?pClk/pImp:0],
+    ["CPC", clk? fmtWon(cost/clk):"-", clk?cost/clk:0, pClk?pCost/pClk:0, true, true],
+    ["전환", fmt(conv), conv, pConv],
+    ["CPA", conv? fmtWon(cost/conv):"-", conv?cost/conv:0, pConv?pCost/pConv:0, true, true],
+    ["ROAS", cost? Math.round(rev/cost*100)+"%":"-", cost?rev/cost:0, pCost?pRev/pCost:0],
+  ];
+  document.getElementById("kpis").innerHTML = items.map(([label,val,cur,prv,_,invert])=>{
+    let delta = '<span class="delta flat">직전 기간 데이터 없음</span>';
+    if(prv>0 && state.rangeDays){
+      const pct = (cur-prv)/prv*100;
+      const good = invert ? pct<0 : pct>0;
+      const cls = Math.abs(pct)<0.05 ? "flat" : good ? "up" : "down";
+      delta = `<span class="delta ${cls}">${pct>=0?"+":""}${pct.toFixed(1)}% vs 직전 ${state.rangeDays}일</span>`;
+    } else if(!state.rangeDays){
+      delta = '<span class="delta flat">전체 기간</span>';
+    }
+    return `<div class="kpi"><div class="label">${label}</div><div class="value">${val}</div>${delta}</div>`;
+  }).join("");
+}
+
+function renderTrend(rows){
+  const dates = [...new Set(rows.map(r=>r.date))].sort();
+  const platforms = [...state.platforms].sort();
+  const datasets = platforms.map(p=>{
+    const byDate = {};
+    rows.filter(r=>r.platform===p).forEach(r=> byDate[r.date]=(byDate[r.date]||0)+(r[state.metric]||0));
+    const c = PLATFORM_COLORS[p]||"#888";
+    return { label:p, data:dates.map(d=>byDate[d]||0), backgroundColor:c, borderRadius:3, stack:"s",
+             maxBarThickness:26 };
+  });
+  const cfg = {
+    type:"bar",
+    data:{ labels:dates.map(d=>d.slice(5).replace("-","/")), datasets },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:"index"},
+      plugins:{
+        legend:{position:"bottom", labels:{usePointStyle:true, pointStyle:"circle", boxWidth:7, font:{family:"Pretendard Variable", size:12}}},
+        tooltip:{callbacks:{label:(ctx)=> ` ${ctx.dataset.label}: ${fmt(ctx.parsed.y)}${state.metric==="cost"||state.metric==="revenue"?"원":""}`}}
+      },
+      scales:{
+        x:{stacked:true, grid:{display:false}, ticks:{font:{size:11}}},
+        y:{stacked:true, border:{display:false}, ticks:{font:{size:11}, callback:v=> v>=10000? (v/10000)+"만" : fmt(v)}}
+      }
+    }
+  };
+  if(trendChart) trendChart.destroy();
+  trendChart = new Chart(document.getElementById("trendChart"), cfg);
+}
+
+function renderShare(rows){
+  const platforms = [...state.platforms].sort();
+  const totals = platforms.map(p=> sum(rows.filter(r=>r.platform===p), "cost"));
+  const grand = totals.reduce((a,b)=>a+b,0) || 1;
+  document.getElementById("shareSub").textContent = "총 지출 " + fmtWon(grand);
+  if(shareChart) shareChart.destroy();
+  shareChart = new Chart(document.getElementById("shareChart"), {
+    type:"doughnut",
+    data:{ labels:platforms, datasets:[{ data:totals, backgroundColor:platforms.map(p=>PLATFORM_COLORS[p]||"#888"), borderWidth:2, borderColor:"#fff" }]},
+    options:{ responsive:true, maintainAspectRatio:false, cutout:"68%",
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:ctx=>` ${ctx.label}: ${fmtWon(ctx.parsed)}`}} } }
+  });
+  document.getElementById("shareList").innerHTML = platforms.map((p,i)=>{
+    const pct = totals[i]/grand*100;
+    const c = PLATFORM_COLORS[p]||"#888";
+    return `<div class="share-row"><span class="dot" style="background:${c}"></span><span class="name">${p}</span>
+      <span class="bar"><i style="width:${pct}%;background:${c}"></i></span>
+      <span class="pct">${pct.toFixed(1)}% · ${fmtWon(totals[i])}</span></div>`;
+  }).join("");
+}
+
+function renderTable(rows){
+  const map = {};
+  rows.forEach(r=>{
+    const key = r.platform+"|"+r.campaign;
+    if(!map[key]) map[key] = { platform:r.platform, campaign:r.campaign, cost:0, impressions:0, clicks:0, conversions:0, revenue:0 };
+    ["cost","impressions","clicks","conversions","revenue"].forEach(k=> map[key][k]+= r[k]||0);
+  });
+  let list = Object.values(map).map(c=>({ ...c,
+    ctr: c.impressions? c.clicks/c.impressions*100:0,
+    cpc: c.clicks? c.cost/c.clicks:0,
+    cpa: c.conversions? c.cost/c.conversions:0,
+    roas: c.cost? c.revenue/c.cost*100:0 }));
+  list.sort((a,b)=> sortAsc ? (a[sortKey]>b[sortKey]?1:-1) : (a[sortKey]<b[sortKey]?1:-1));
+
+  const cols = [["campaign","캠페인"],["cost","지출"],["impressions","노출"],["clicks","클릭"],
+                ["ctr","CTR"],["cpc","CPC"],["conversions","전환"],["cpa","CPA"],["roas","ROAS"]];
+  const head = "<tr>" + cols.map(([k,label])=>
+    `<th data-k="${k}" class="${k===sortKey?'sorted'+(sortAsc?' asc':''):''}">${label}</th>`).join("") + "</tr>";
+  const body = list.map(c=>{
+    const color = PLATFORM_COLORS[c.platform]||"#888";
+    return `<tr>
+      <td><span class="badge" style="background:${color}">${c.platform}</span>${c.campaign}</td>
+      <td>${fmtWon(c.cost)}</td><td>${fmt(c.impressions)}</td><td>${fmt(c.clicks)}</td>
+      <td>${c.ctr.toFixed(2)}%</td><td>${c.cpc?fmtWon(c.cpc):"-"}</td>
+      <td>${fmt(c.conversions)}</td><td>${c.cpa?fmtWon(c.cpa):"-"}</td>
+      <td>${Math.round(c.roas)}%</td></tr>`;
+  }).join("");
+  const table = document.getElementById("campaignTable");
+  table.innerHTML = head + body;
+  table.querySelectorAll("th").forEach(th=>{
+    th.onclick = ()=>{
+      const k = th.dataset.k;
+      if(sortKey===k) sortAsc=!sortAsc; else { sortKey=k; sortAsc=(k==="campaign"); }
+      renderTable(currentRows());
+    };
+  });
+}
+
+init();
+</script>
+</body>
+</html>
