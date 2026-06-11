@@ -267,39 +267,6 @@
 
 <script>
 /* ─────────────────────────────────────────────
-   비밀번호 설정 — 따옴표 안의 값을 바꾸면 됩니다.
-   ⚠️ 간단한 가림막 수준입니다. 저장소가 Public이면
-   데이터 파일 주소를 아는 사람은 내용을 받을 수 있으니,
-   확실한 보호가 필요하면 Private 전환 또는 암호화를 적용하세요.
-───────────────────────────────────────────── */
-const PASSWORD = "2026";
-
-const safeStore = {
-  get(k){ try{ return sessionStorage.getItem(k); }catch(e){ return null; } },
-  set(k,v){ try{ sessionStorage.setItem(k,v); }catch(e){} }
-};
-function setupGate(){
-  if(safeStore.get("adboard_ok")==="1"){ unlockGate(); return; }
-  document.getElementById("gate").hidden = false;
-  const tryPw = ()=>{
-    if(document.getElementById("gatePw").value.trim() === PASSWORD){
-      safeStore.set("adboard_ok","1"); unlockGate();
-    }else{
-      document.getElementById("gateErr").textContent = "비밀번호가 틀렸습니다";
-      document.getElementById("gatePw").select();
-    }
-  };
-  document.getElementById("gateBtn").onclick = tryPw;
-  document.getElementById("gatePw").addEventListener("keydown", e=>{ if(e.key==="Enter") tryPw(); });
-  document.getElementById("gatePw").focus();
-}
-function unlockGate(){
-  document.getElementById("gate").hidden = true;
-  document.getElementById("appLayout").style.visibility = "visible";
-  document.getElementById("sidenav").style.visibility = "visible";
-}
-
-/* ─────────────────────────────────────────────
    GA4 이벤트 그룹 설정 — 광고주에 맞게 수정하세요.
    여기에 없는 이벤트는 자동으로 "기타" 그룹에 들어갑니다.
 ───────────────────────────────────────────── */
@@ -357,7 +324,6 @@ function presetRange(label){
 
 /* ── 초기화 ── */
 async function init(){
-  setupGate();
   try{
     const res = await fetch("data.json?t=" + Date.now());
     const json = await res.json();
@@ -810,6 +776,43 @@ function renderDaily(rows){
 }
 
 init();
+</script>
+<script>
+/* ══════════════════════════════════════════════
+   비밀번호 게이트 (독립 실행) — 아래 따옴표 안 값을 바꾸면 됩니다.
+   ⚠️ 간단한 가림막 수준입니다. 확실한 보호가 필요하면
+   Private 전환 또는 암호화를 적용하세요.
+══════════════════════════════════════════════ */
+(function(){
+  var PASSWORD = "2026";
+  function $(id){ return document.getElementById(id); }
+  // 전각 숫자(２０２６)·공백 등 입력 변형을 정규화
+  function normalize(s){
+    return String(s||"")
+      .replace(/[\uFF10-\uFF19]/g, function(c){ return String.fromCharCode(c.charCodeAt(0)-0xFEE0); })
+      .replace(/\s/g, "");
+  }
+  function unlock(){
+    $("gate").hidden = true;
+    $("appLayout").style.visibility = "visible";
+    $("sidenav").style.visibility = "visible";
+    try{ sessionStorage.setItem("adboard_ok","1"); }catch(e){}
+  }
+  function tryPw(){
+    if(normalize($("gatePw").value) === PASSWORD){ unlock(); }
+    else{
+      $("gateErr").textContent = "비밀번호가 틀렸습니다";
+      $("gatePw").select();
+    }
+  }
+  var saved = null;
+  try{ saved = sessionStorage.getItem("adboard_ok"); }catch(e){}
+  if(saved === "1"){ unlock(); return; }
+  $("gate").hidden = false;
+  $("gateBtn").addEventListener("click", tryPw);
+  $("gatePw").addEventListener("keydown", function(e){ if(e.key === "Enter") tryPw(); });
+  $("gatePw").focus();
+})();
 </script>
 </body>
 </html>
