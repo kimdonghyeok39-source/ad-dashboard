@@ -1,19 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-플랫폼별 광고 성과 CSV를 하나의 JSON으로 통합하는 스크립트.
+플랫폼별 광고 성과 CSV + GA4 전환 CSV를 하나의 JSON으로 통합하는 스크립트.
 
 사용법:
   python scripts/merge.py
 
-data/raw/<플랫폼>/ 폴더의 모든 CSV를 읽어
-docs/data.json 으로 저장합니다 (대시보드가 이 파일을 읽음).
+[매체 데이터]  data/raw/<meta|google|naver|kakao>/ 폴더의 CSV
+[GA4 데이터]  data/raw/ga4/ 폴더의 CSV (일자 × 세션 캠페인 × 콘텐츠 단위 내보내기)
+[매핑 테이블] data/mapping.csv — 매체 캠페인명 ↔ UTM 값 연결
 
-플랫폼에서 내려받은 CSV의 컬럼명이 아래 COLUMN_MAP과 다르면
-해당 플랫폼의 후보 목록에 실제 컬럼명을 추가해 주세요.
+→ docs/data.json 으로 저장 (대시보드가 이 파일을 읽음)
+
+매핑 테이블 형식 (data/mapping.csv):
+  매체,매체캠페인명,UTM캠페인,매체그룹명,UTM콘텐츠
+  - 매체/매체캠페인명/UTM캠페인 3개는 필수
+  - 매체그룹명/UTM콘텐츠까지 채우면 그룹 단위로 정밀 매칭
+  - 매체가 비어있는 행은 무시됨 (미매핑으로 기록)
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -21,14 +26,19 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "data" / "raw"
+MAPPING_FILE = ROOT / "data" / "mapping.csv"
 OUT_FILE = ROOT / "docs" / "data.json"
 
-# 각 표준 필드에 대해, 플랫폼 CSV에서 나타날 수 있는 컬럼명 후보들.
-# 후보는 부분 일치(포함)로도 매칭됩니다. 앞에 있는 후보가 우선합니다.
+# ──────────────────────────────────────────────
+# 매체 CSV 컬럼 매핑 (후보는 부분 일치 허용, 앞이 우선)
+# ──────────────────────────────────────────────
 COLUMN_MAP = {
     "meta": {
         "date": ["일", "보고 시작", "날짜", "day"],
         "campaign": ["캠페인 이름", "campaign name"],
+        "group": ["광고 세트 이름", "광고세트", "ad set name"],
+        "ad": ["광고 이름", "광고명", "ad name"],
+        "device": ["노출 기기", "디바이스", "impression device"],
         "impressions": ["노출", "impressions"],
         "clicks": ["클릭(전체)", "링크 클릭", "클릭", "clicks"],
         "cost": ["지출 금액", "amount spent"],
@@ -38,6 +48,10 @@ COLUMN_MAP = {
     "google": {
         "date": ["일", "날짜", "day"],
         "campaign": ["캠페인", "campaign"],
+        "group": ["광고그룹", "광고 그룹", "ad group"],
+        "ad": ["광고 이름", "광고 제목", "ad name"],
+        "keyword": ["검색 키워드", "키워드", "keyword"],
+        "device": ["기기", "디바이스", "device"],
         "impressions": ["노출수", "노출", "impressions"],
         "clicks": ["클릭수", "클릭", "clicks"],
         "cost": ["비용", "cost"],
@@ -47,6 +61,10 @@ COLUMN_MAP = {
     "naver": {
         "date": ["기준일", "날짜", "일별"],
         "campaign": ["캠페인이름", "캠페인 이름", "캠페인"],
+        "group": ["광고그룹이름", "광고그룹 이름", "광고그룹"],
+        "ad": ["소재", "소재명", "광고소재"],
+        "keyword": ["키워드", "검색어"],
+        "device": ["디바이스", "PC/모바일"],
         "impressions": ["노출수", "노출"],
         "clicks": ["클릭수", "클릭"],
         "cost": ["총비용", "비용"],
@@ -56,6 +74,9 @@ COLUMN_MAP = {
     "kakao": {
         "date": ["일자", "날짜", "일"],
         "campaign": ["캠페인", "캠페인명"],
+        "group": ["광고그룹", "광고 그룹", "그룹"],
+        "ad": ["소재", "소재명", "광고 이름"],
+        "device": ["디바이스"],
         "impressions": ["노출수", "노출"],
         "clicks": ["클릭수", "클릭"],
         "cost": ["비용", "지출"],
@@ -64,27 +85,61 @@ COLUMN_MAP = {
     },
 }
 
-PLATFORM_LABEL = {
-    "meta": "메타",
-    "google": "구글",
-    "naver": "네이버",
-    "kakao": "카카오",
+PLATFORM_LABEL = {"meta": "메타", "google": "구글", "naver": "네이버", "kakao": "카카오"}
+
+# GA4 내보내기 CSV의 차원 컬럼 후보
+GA4_DIMS = {
+    "date": ["날짜", "일", "date"],
+    "device": ["기기 카테고리", "디바이스", "device category"],
+    "utm_campaign": ["세션 캠페인", "캠페인", "session campaign"],
+    "utm_content": ["세션 수동 광고 콘텐츠", "광고 콘텐츠", "session manual ad content"],
+    "utm_term": ["세션 수동 검색어", "검색어", "session manual term"],
 }
+GA4_IGNORE_METRICS = {"총계", "총합계", "totals", "total"}
+
+DEVICE_ALIASES = [
+    (("모바일", "mobile", "휴대전화", "휴대폰", "스마트폰"), "모바일"),
+    (("pc", "컴퓨터", "데스크", "desktop"), "PC"),
+    (("태블릿", "tablet"), "태블릿"),
+]
 
 
-def read_csv_safely(path: Path) -> pd.DataFrame:
-    """네이버/카카오 CSV는 cp949 인코딩인 경우가 많아 순차적으로 시도."""
-    for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+def normalize_device(v: str) -> str:
+    low = str(v).lower()
+    if low in ("", "nan", "-", "--", "(not set)"):
+        return ""
+    for keys, label in DEVICE_ALIASES:
+        if any(k in low for k in keys):
+            return label
+    return str(v)
+
+
+def read_csv_safely(path: Path, mapping: dict) -> pd.DataFrame:
+    """인코딩 자동 인식 + 헤더 행 자동 탐지 (구글 애즈 제목 줄 대응)."""
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr", "utf-16"):
         try:
-            return pd.read_csv(path, encoding=enc)
+            text = path.read_bytes().decode(enc)
+            break
         except (UnicodeDecodeError, UnicodeError):
             continue
-    raise ValueError(f"인코딩을 인식할 수 없습니다: {path}")
+    if text is None:
+        raise ValueError(f"인코딩을 인식할 수 없습니다: {path}")
+
+    candidates = [c for cands in mapping.values() for c in cands]
+    header_idx = 0
+    for i, line in enumerate(text.splitlines()[:20]):
+        hits = sum(1 for c in candidates if c in line)
+        if hits >= 2:
+            header_idx = i
+            break
+
+    import io
+    return pd.read_csv(io.StringIO(text), skiprows=header_idx)
 
 
 def find_column(columns, candidates):
-    """후보 목록에서 일치하는 컬럼명 탐색 (정확 일치 → 부분 일치)."""
-    cols = {c.strip(): c for c in columns}
+    cols = {str(c).strip(): c for c in columns}
     for cand in candidates:
         if cand in cols:
             return cols[cand]
@@ -96,7 +151,6 @@ def find_column(columns, candidates):
 
 
 def to_number(series: pd.Series) -> pd.Series:
-    """'1,234원' 같은 문자열을 숫자로 변환."""
     cleaned = (
         series.astype(str)
         .str.replace(r"[^\d.\-]", "", regex=True)
@@ -106,14 +160,16 @@ def to_number(series: pd.Series) -> pd.Series:
 
 
 def normalize_date(series: pd.Series) -> pd.Series:
-    """2026-06-01, 2026.06.01, 20260601 등 다양한 형식을 YYYY-MM-DD로 통일."""
     s = series.astype(str).str.strip().str.replace(r"[./]", "-", regex=True)
-    s = s.str.rstrip("-")  # 네이버 '2026.05.25.' 형식의 끝 구분자 제거
+    s = s.str.rstrip("-")
     s = s.str.replace(r"^(\d{4})(\d{2})(\d{2})$", r"\1-\2-\3", regex=True)
     return pd.to_datetime(s, errors="coerce").dt.strftime("%Y-%m-%d")
 
 
-def process_platform(platform: str) -> list[dict]:
+# ──────────────────────────────────────────────
+# 매체 데이터 처리
+# ──────────────────────────────────────────────
+def process_platform(platform: str) -> list:
     folder = RAW_DIR / platform
     if not folder.exists():
         return []
@@ -123,7 +179,7 @@ def process_platform(platform: str) -> list[dict]:
 
     for csv_path in sorted(folder.glob("*.csv")):
         try:
-            df = read_csv_safely(csv_path)
+            df = read_csv_safely(csv_path, mapping)
         except Exception as e:
             print(f"  [경고] {csv_path.name} 읽기 실패: {e}", file=sys.stderr)
             continue
@@ -142,13 +198,16 @@ def process_platform(platform: str) -> list[dict]:
         out = pd.DataFrame()
         out["date"] = normalize_date(df[resolved["date"]])
         out["campaign"] = df[resolved["campaign"]].astype(str).str.strip()
+        for dim in ("group", "ad", "keyword", "device"):
+            col = resolved.get(dim)
+            out[dim] = df[col].astype(str).str.strip().replace("nan", "") if col else ""
+        out["device"] = out["device"].map(normalize_device)
         for field in ("impressions", "clicks", "cost", "conversions", "revenue"):
-            col = resolved[field]
+            col = resolved.get(field)
             out[field] = to_number(df[col]) if col else 0
 
         out["platform"] = PLATFORM_LABEL[platform]
         out = out.dropna(subset=["date"])
-        # '합계' 같은 요약 행 제거 (캠페인명 전체가 요약 단어일 때만)
         summary_words = {"합계", "총계", "전체", "total", "총합", "소계"}
         out = out[~out["campaign"].str.lower().isin(summary_words)]
         rows.append(out)
@@ -158,9 +217,124 @@ def process_platform(platform: str) -> list[dict]:
         return []
 
     merged = pd.concat(rows, ignore_index=True)
-    # 같은 날짜+캠페인이 여러 파일에 중복되면 마지막 파일 기준으로 유지
-    merged = merged.drop_duplicates(subset=["date", "campaign"], keep="last")
+    merged = merged.drop_duplicates(
+        subset=["date", "campaign", "group", "ad", "keyword", "device"], keep="last"
+    )
     return merged.to_dict(orient="records")
+
+
+# ──────────────────────────────────────────────
+# 매핑 테이블 + GA4 데이터 처리
+# ──────────────────────────────────────────────
+def load_mapping():
+    """data/mapping.csv → (캠페인 매핑, 그룹 매핑)"""
+    if not MAPPING_FILE.exists():
+        return {}, {}
+    try:
+        mdf = read_csv_safely(MAPPING_FILE, {"_": ["UTM캠페인", "매체캠페인명"]})
+    except Exception as e:
+        print(f"[경고] mapping.csv 읽기 실패: {e}", file=sys.stderr)
+        return {}, {}
+
+    for col in ("매체", "매체캠페인명", "UTM캠페인", "매체그룹명", "UTM콘텐츠"):
+        if col not in mdf.columns:
+            mdf[col] = ""
+    mdf = mdf.fillna("").astype(str)
+    for col in mdf.columns:
+        mdf[col] = mdf[col].str.strip()
+
+    camp_map, grp_map = {}, {}
+    valid_platforms = set(PLATFORM_LABEL.values())
+    for _, r in mdf.iterrows():
+        if not r["매체"] or not r["매체캠페인명"] or not r["UTM캠페인"]:
+            continue
+        if r["매체"] not in valid_platforms:
+            print(f"  [경고] mapping.csv: 알 수 없는 매체 '{r['매체']}' (메타/구글/네이버/카카오 중 하나여야 함)", file=sys.stderr)
+            continue
+        camp_map[r["UTM캠페인"]] = (r["매체"], r["매체캠페인명"])
+        if r["UTM콘텐츠"]:
+            grp_map[(r["UTM캠페인"], r["UTM콘텐츠"])] = (r["매체"], r["매체캠페인명"], r["매체그룹명"])
+    return camp_map, grp_map
+
+
+def process_ga4():
+    folder = RAW_DIR / "ga4"
+    if not folder.exists():
+        return [], {}
+
+    camp_map, grp_map = load_mapping()
+    frames = []
+
+    for csv_path in sorted(folder.glob("*.csv")):
+        try:
+            df = read_csv_safely(csv_path, GA4_DIMS)
+        except Exception as e:
+            print(f"  [경고] {csv_path.name} 읽기 실패: {e}", file=sys.stderr)
+            continue
+
+        resolved = {field: find_column(df.columns, cands) for field, cands in GA4_DIMS.items()}
+        if not resolved["date"] or not resolved["utm_campaign"]:
+            print(f"  [경고] {csv_path.name}: 날짜/세션 캠페인 컬럼을 찾지 못해 건너뜀", file=sys.stderr)
+            continue
+
+        dim_cols = [c for c in resolved.values() if c]
+        event_cols = [
+            c for c in df.columns
+            if c not in dim_cols and str(c).strip().lower() not in GA4_IGNORE_METRICS
+        ]
+
+        out = pd.DataFrame()
+        out["date"] = normalize_date(df[resolved["date"]])
+        out["utm_campaign"] = df[resolved["utm_campaign"]].astype(str).str.strip()
+        out["utm_content"] = (
+            df[resolved["utm_content"]].astype(str).str.strip().replace("nan", "")
+            if resolved["utm_content"] else ""
+        )
+        out["device"] = (
+            df[resolved["device"]].map(normalize_device) if resolved["device"] else ""
+        )
+        for ev in event_cols:
+            out[ev] = to_number(df[ev])
+
+        out = out.dropna(subset=["date"])
+        frames.append((out, event_cols))
+        print(f"  {csv_path.name}: {len(out)}행, 이벤트 {len(event_cols)}종 처리")
+
+    if not frames:
+        return [], {}
+
+    all_events = sorted({ev for _, evs in frames for ev in evs})
+    ga4 = pd.concat([f for f, _ in frames], ignore_index=True)
+    for ev in all_events:
+        if ev not in ga4.columns:
+            ga4[ev] = 0
+        ga4[ev] = ga4[ev].fillna(0)
+
+    ga4 = ga4.groupby(["date", "utm_campaign", "utm_content", "device"], as_index=False)[all_events].sum()
+
+    records, unmapped = [], {}
+    for _, r in ga4.iterrows():
+        key2 = (r["utm_campaign"], r["utm_content"])
+        if key2 in grp_map:
+            platform, campaign, group = grp_map[key2]
+        elif r["utm_campaign"] in camp_map:
+            platform, campaign = camp_map[r["utm_campaign"]]
+            group = ""
+        else:
+            total = int(sum(r[ev] for ev in all_events))
+            if total > 0 and r["utm_campaign"] not in ("(not set)", "(direct)", "(organic)"):
+                unmapped[r["utm_campaign"]] = unmapped.get(r["utm_campaign"], 0) + total
+            continue
+
+        events = {ev: int(r[ev]) for ev in all_events if r[ev] > 0}
+        if not events:
+            continue
+        records.append({
+            "date": r["date"], "platform": platform, "campaign": campaign,
+            "group": group, "device": r["device"], "events": events,
+        })
+
+    return records, unmapped
 
 
 def main():
@@ -168,17 +342,24 @@ def main():
     for platform in COLUMN_MAP:
         print(f"[{PLATFORM_LABEL[platform]}] 처리 중...")
         all_rows.extend(process_platform(platform))
-
     all_rows.sort(key=lambda r: (r["date"], r["platform"], r["campaign"]))
+
+    print("[GA4] 처리 중...")
+    ga4_records, unmapped = process_ga4()
+    if unmapped:
+        print("\n  ⚠️ 매핑되지 않은 UTM 캠페인 (전환수 순) — data/mapping.csv에 추가해 주세요:")
+        for utm, total in sorted(unmapped.items(), key=lambda x: -x[1])[:20]:
+            print(f"    - {utm}  (전환 {total})")
 
     payload = {
         "updated_at": pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M"),
         "rows": all_rows,
+        "ga4": ga4_records,
     }
 
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUT_FILE.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    print(f"\n완료: {len(all_rows)}행 → {OUT_FILE.relative_to(ROOT)}")
+    print(f"\n완료: 매체 {len(all_rows)}행 + GA4 {len(ga4_records)}행 → {OUT_FILE.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
