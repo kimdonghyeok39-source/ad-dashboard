@@ -286,7 +286,7 @@ def load_mapping(campaign_platform):
     return camp_map, grp_map
 
 
-def process_ga4(campaign_platform):
+def process_ga4(campaign_platform, ad_index, ad_group):
     folder = RAW_DIR / "ga4"
     if not folder.exists():
         return [], {}
@@ -319,6 +319,10 @@ def process_ga4(campaign_platform):
             df[resolved["utm_content"]].astype(str).str.strip().replace("nan", "")
             if resolved["utm_content"] else ""
         )
+        out["utm_term"] = (
+            df[resolved["utm_term"]].astype(str).str.strip().replace("nan", "")
+            if resolved["utm_term"] else ""
+        )
         out["device"] = (
             df[resolved["device"]].map(normalize_device) if resolved["device"] else ""
         )
@@ -339,7 +343,7 @@ def process_ga4(campaign_platform):
             ga4[ev] = 0
         ga4[ev] = ga4[ev].fillna(0)
 
-    ga4 = ga4.groupby(["date", "utm_campaign", "utm_content", "device"], as_index=False)[all_events].sum()
+    ga4 = ga4.groupby(["date", "utm_campaign", "utm_content", "utm_term", "device"], as_index=False)[all_events].sum()
 
     records, unmapped = [], {}
     for _, r in ga4.iterrows():
@@ -358,9 +362,18 @@ def process_ga4(campaign_platform):
         events = {ev: int(r[ev]) for ev in all_events if r[ev] > 0}
         if not events:
             continue
+
+        # 소재 자동 매칭: utm_term이 해당 캠페인의 소재명과 정확히 같으면 연결
+        ad = ""
+        term = r.get("utm_term", "")
+        if term and term in ad_index.get((platform, campaign), set()):
+            ad = term
+            if not group:
+                group = ad_group.get((platform, campaign, ad), "")
+
         records.append({
             "date": r["date"], "platform": platform, "campaign": campaign,
-            "group": group, "device": r["device"], "events": events,
+            "group": group, "ad": ad, "device": r["device"], "events": events,
         })
 
     return records, unmapped
@@ -374,11 +387,18 @@ def main():
     all_rows.sort(key=lambda r: (r["date"], r["platform"], r["campaign"]))
 
     campaign_platform = {}
+    ad_index = {}     # (매체, 캠페인) → 소재명 집합
+    ad_group = {}     # (매체, 캠페인, 소재) → 그룹명
     for r in all_rows:
         campaign_platform.setdefault(r["campaign"], set()).add(r["platform"])
+        if r.get("ad"):
+            key = (r["platform"], r["campaign"])
+            ad_index.setdefault(key, set()).add(r["ad"])
+            if r.get("group"):
+                ad_group[(r["platform"], r["campaign"], r["ad"])] = r["group"]
 
     print("[GA4] 처리 중...")
-    ga4_records, unmapped = process_ga4(campaign_platform)
+    ga4_records, unmapped = process_ga4(campaign_platform, ad_index, ad_group)
     if unmapped:
         print("\n  ⚠️ 매핑되지 않은 UTM 캠페인 (전환수 순) — data/mapping.csv에 추가해 주세요:")
         for utm, total in sorted(unmapped.items(), key=lambda x: -x[1])[:20]:
